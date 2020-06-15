@@ -5,6 +5,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/outbrain/golib/log"
+	"strings"
 )
 
 type SearchContext struct {
@@ -35,6 +36,11 @@ type BinlogEvents struct {
 	EventInfo string `db:"Info"`
 }
 var BinlogEventsList []*BinlogEvents
+
+type BinlogSub struct {
+	Substract string `db:"gtid_substract"`
+}
+
 
 func NewSearchContext() *SearchContext {
 	return &SearchContext{
@@ -75,12 +81,48 @@ func (this *Searchor) SearchGtid() (err error) {
 		return err
 	}
 	for _, v := range BinaryLogsList {
-		EventsQuery := fmt.Sprintf("SHOW BINLOG EVENTS IN '%s' LIMIT 2;", v.BinlogName)
+		EventsQuery := fmt.Sprintf("SHOW BINLOG EVENTS IN '%s' LIMIT 1,1;", v.BinlogName)
 		err = db.Select(&BinlogEventsList, EventsQuery)
 		if err != nil{
 			log.Errorf("show binlog events error: %s", err.Error())
 			return err
 		}
 	}
+
+	binLen := len(BinlogEventsList)
+	BinlogGtidDict := make(map[string]string)
+	for i := 1; i < binLen; i++ {
+		afterFile := BinlogEventsList[binLen - i]
+		beforeFile := BinlogEventsList[binLen - (i + 1)]
+		afterFile.EventInfo = strings.Replace(afterFile.EventInfo, "\n", "", -1)
+		beforeFile.EventInfo = strings.Replace(beforeFile.EventInfo, "\n", "", -1)
+		//BinlogEventsList = BinlogEventsList[:len(BinlogEventsList)-1]
+		CompareQuery := fmt.Sprintf("SELECT GTID_SUBTRACT('%s', '%s') as gtid_substract;", afterFile.EventInfo, beforeFile.EventInfo)
+		gtidSub := BinlogSub{}
+		err = db.Get(&gtidSub, CompareQuery)
+		if err != nil{
+			return err
+		}
+		//fmt.Println(gtidSub.Substract)
+
+		BinlogGtidDict[afterFile.BinlogName] = gtidSub.Substract
+	}
+	for key, valus := range BinlogGtidDict {
+		Query := fmt.Sprintf("SELECT GTID_SUBTRACT('%s', '%s') as gtid_substract;", valus, this.searchContext.GtidSearch)
+		searchGtid := BinlogSub{}
+		err = db.Get(&searchGtid, Query)
+		if err != nil {
+			return err
+		}
+		switch searchGtid.Substract {
+		case valus:
+			continue
+		default:
+			log.Info("Find GTID in Binary Log File: ", key)
+			return nil
+		}
+	}
+	log.Infof("GTID Not search...")
 	return nil
 }
+
