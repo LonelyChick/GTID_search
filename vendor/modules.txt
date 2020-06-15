@@ -1,0 +1,2 @@
+# github.com/outbrain/golib v0.0.0-20200503083229-2531e5dbcc71
+github.com/outbrain/golib/log
