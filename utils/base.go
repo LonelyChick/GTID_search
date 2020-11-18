@@ -23,22 +23,26 @@ type Searchor struct {
 
 type BinaryLogs struct {
 	BinlogName string `db:"Log_name"`
-	BinlogSize int32 `db:"File_size"`
+	BinlogSize int64 `db:"File_size"`
 }
 var BinaryLogsList []*BinaryLogs
 
 type BinlogEvents struct {
 	BinlogName string `db:"Log_name"`
-	Position int32 `db:"Pos"`
+	Position int64 `db:"Pos"`
 	EventType string `db:"Event_type"`
-	ServerId int32 `db:"Server_id"`
-	EndPosition int32 `db:"End_log_pos"`
+	ServerId int64 `db:"Server_id"`
+	EndPosition int64 `db:"End_log_pos"`
 	EventInfo string `db:"Info"`
 }
 var BinlogEventsList []*BinlogEvents
 
 type BinlogSub struct {
 	Substract string `db:"gtid_substract"`
+}
+
+type BinlogSet struct {
+	SubSet int `db:"gtid_subset"`
 }
 
 
@@ -93,11 +97,12 @@ func (this *Searchor) SearchGtid() (err error) {
 	BinlogGtidDict := make(map[string]string)
 	for i := 1; i < binLen; i++ {
 		afterFile := BinlogEventsList[binLen - i]
-		beforeFile := BinlogEventsList[binLen - (i + 1)]
+		beforeFile := BinlogEventsList[binLen - (i+1)]
 		afterFile.EventInfo = strings.Replace(afterFile.EventInfo, "\n", "", -1)
 		beforeFile.EventInfo = strings.Replace(beforeFile.EventInfo, "\n", "", -1)
 		//BinlogEventsList = BinlogEventsList[:len(BinlogEventsList)-1]
 		CompareQuery := fmt.Sprintf("SELECT GTID_SUBTRACT('%s', '%s') as gtid_substract;", afterFile.EventInfo, beforeFile.EventInfo)
+
 		gtidSub := BinlogSub{}
 		err = db.Get(&gtidSub, CompareQuery)
 		if err != nil{
@@ -105,19 +110,18 @@ func (this *Searchor) SearchGtid() (err error) {
 		}
 		//fmt.Println(gtidSub.Substract)
 
-		BinlogGtidDict[afterFile.BinlogName] = gtidSub.Substract
+		BinlogGtidDict[beforeFile.BinlogName] = gtidSub.Substract
 	}
+
 	for key, valus := range BinlogGtidDict {
-		Query := fmt.Sprintf("SELECT GTID_SUBTRACT('%s', '%s') as gtid_substract;", valus, this.searchContext.GtidSearch)
-		searchGtid := BinlogSub{}
+		Query := fmt.Sprintf("SELECT GTID_SUBSET('%s', '%s') as gtid_subset;", this.searchContext.GtidSearch, valus)
+		searchGtid := BinlogSet{}
 		err = db.Get(&searchGtid, Query)
 		if err != nil {
 			return err
 		}
-		switch searchGtid.Substract {
-		case valus:
-			continue
-		default:
+		switch searchGtid.SubSet {
+		case 1:
 			log.Info("Find GTID in Binary Log File: ", key)
 			return nil
 		}
