@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+//命令行参数
 type SearchContext struct {
 	Host     string
 	Port     int
@@ -21,12 +22,14 @@ type Searchor struct {
 
 }
 
+//binlog列表
 type BinaryLogs struct {
 	BinlogName string `db:"Log_name"`
 	BinlogSize int64 `db:"File_size"`
 }
 var BinaryLogsList []*BinaryLogs
 
+//binlog events
 type BinlogEvents struct {
 	BinlogName string `db:"Log_name"`
 	Position int64 `db:"Pos"`
@@ -37,10 +40,24 @@ type BinlogEvents struct {
 }
 var BinlogEventsList []*BinlogEvents
 
+//GTID_SUBTRACT
 type BinlogSub struct {
 	Substract string `db:"gtid_substract"`
 }
 
+//MySQL参数gtid_executed
+type BinlogExec struct {
+	VariablesName string `db:"Variable_name"`
+	Values string `db:"Value"`
+}
+
+//MySQL参数gtid_purged
+type BinlogPurg struct {
+	VariablesName string `db:"Variable_name"`
+	Values string `db:"Value"`
+}
+
+//GTID_SUBSET
 type BinlogSet struct {
 	SubSet int `db:"gtid_subset"`
 }
@@ -84,6 +101,8 @@ func (this *Searchor) SearchGtid() (err error) {
 		log.Errorf("show binary logs error: %s", err.Error())
 		return err
 	}
+
+	//获取binlog中的Previous_gtids
 	for _, v := range BinaryLogsList {
 		EventsQuery := fmt.Sprintf("SHOW BINLOG EVENTS IN '%s' LIMIT 1,1;", v.BinlogName)
 		err = db.Select(&BinlogEventsList, EventsQuery)
@@ -93,8 +112,40 @@ func (this *Searchor) SearchGtid() (err error) {
 		}
 	}
 
+	//获取当前binlog中的gtid
+	ExecQuery := fmt.Sprintf("SHOW GLOBAL VARIABLES LIKE 'gtid_executed';")
+	BinlogExecuted := new(BinlogExec)
+	err = db.Get(BinlogExecuted, ExecQuery)
+	if err != nil {
+		log.Errorf("get gtid_executed err:", err.Error())
+		return err
+	}
+
+	BinlogPurged := new(BinlogPurg)
+	PurgQuery := fmt.Sprintf("SHOW GLOBAL VARIABLES LIKE 'gtid_purged';")
+	err = db.Get(BinlogPurged, PurgQuery)
+	if err != nil {
+		log.Errorf("get gtid_purged err:", err.Error())
+		return err
+	}
+
 	binLen := len(BinlogEventsList)
 	BinlogGtidDict := make(map[string]string)
+	firstQuery := fmt.Sprintf("SELECT GTID_SUBTRACT('%s', '%s') as gtid_substract;", BinlogExecuted.Values, BinlogPurged.Values)
+	firstSub := BinlogSub{}
+	err =  db.Get(&firstSub, firstQuery)
+	if err != nil {
+		log.Errorf("get gtid_purged/gtid_executed sub err:", err.Error())
+		return err
+	}
+	firstFile := BinlogEventsList[binLen-1]
+	firstFile.EventInfo = strings.Replace(firstFile.EventInfo, "\n", "", -1)
+	//求gtid集合的差集
+	firstGtidQuery := fmt.Sprintf("SELECT GTID_SUBTRACT('%s', '%s') as gtid_substract;", firstSub.Substract, firstFile.EventInfo)
+	err = db.Get(firstSub, firstGtidQuery)
+	BinlogGtidDict[firstFile.BinlogName] = firstSub.Substract
+
+	//遍历最近一个binlog之前的binlog中的gtid
 	for i := 1; i < binLen; i++ {
 		afterFile := BinlogEventsList[binLen - i]
 		beforeFile := BinlogEventsList[binLen - (i+1)]
@@ -114,6 +165,7 @@ func (this *Searchor) SearchGtid() (err error) {
 	}
 
 	for key, valus := range BinlogGtidDict {
+		//查找gitd是否在binlog的gtid集合中
 		Query := fmt.Sprintf("SELECT GTID_SUBSET('%s', '%s') as gtid_subset;", this.searchContext.GtidSearch, valus)
 		searchGtid := BinlogSet{}
 		err = db.Get(&searchGtid, Query)
